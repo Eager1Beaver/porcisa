@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 
-<model cmeta:id="carro_2011_epi_pig_scratch_4_go1" name="carro_2011_epi_pig_scratch_4_go1" xmlns="http://www.cellml.org/cellml/1.0#" xmlns:cellml="http://www.cellml.org/cellml/1.0#" xmlns:cmeta="http://www.cellml.org/metadata/1.0#">
+<model cmeta:id="pig_ventr_ap_epi" name="pig_ventr_ap_epi" xmlns="http://www.cellml.org/cellml/1.0#" xmlns:cellml="http://www.cellml.org/cellml/1.0#" xmlns:cmeta="http://www.cellml.org/metadata/1.0#">
     <units name="millivolt">
         <unit prefix="milli" units="volt"/>
     </units>
