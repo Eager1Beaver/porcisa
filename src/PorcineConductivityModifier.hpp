@@ -1,198 +1,131 @@
-#include "AbstractConductivityModifier.hpp"
+#ifndef PORCINE_CONDUCTIVITY_MODIFIER_HPP_
+#define PORCINE_CONDUCTIVITY_MODIFIER_HPP_
 
-//#include "BidomainProblem.hpp" //
+/*
+	Element-wise conductivity scaling for ischemic regions in a porcine bidomain setup.
+ 
+ 	Behavior:
+ 	- Constructor takes an ischemia flag, a scaling factor (factor_h), a spherical region
+     defined by center (xx,yy,zz) and radius, a "transmural" domain gate (unsigned),
+     and a reference to the BidomainProblem<3>.
+   	- rCalculateModifiedConductivityTensor(elementIndex, rOriginalConductivity, domainIndex)
+     returns a reference to an internal tensor (mTensor) that equals the original tensor
+     OR a scaled version when conditions match.
+ 
+  	Notes:
+   	- Domain gating: if _transmural==0 -> apply anywhere; if >0 -> apply ONLY when
+     domainIndex == _transmural
+   	- If the element/node location is inside the ischemic sphere and domain gating passes,
+     we multiply the whole tensor by factor_h
+   	- The returned tensor preserves symmetry if the original is symmetric.
+ */
+
+#include "AbstractConductivityModifier.hpp"
+#include "BidomainProblem.hpp"
+#include "UblasIncludes.hpp"
+#include <cmath>
+#include <algorithm>
 
 class PorcineConductivityModifier : public AbstractConductivityModifier<3,3>
 {
 private:
-
+    // Returned storage
     c_matrix<double,3,3> mTensor;
 
-    bool mIschaemia;
-    //bool mPhase1a;
-    //bool mPhase1b;
+    // Config
+    bool   mIschaemia = false;
+    double mFactor    = 1.0;   // multiplicative factor for conductivity
+    double mRadius    = 0.0;   // ischemic sphere radius (same units as mesh coordinates)
+    double mCx        = 0.0;   // center x
+    double mCy        = 0.0;   // center y
+    double mCz        = 0.0;   // center z
+    unsigned mTransmuralGate = 0; // 0: apply anywhere; >0: apply only if domainIndex==this
 
-    double _factor_h;
-	double	_radius;
-	double	_xx;
-	double	_yy;
-	double	_zz;	
-	
-	unsigned _transmural;
-
-	BidomainProblem<3>& mrProblem; // For tissue, for cells	
-	//BidomainTissue<3>& mrProblem;
+    BidomainProblem<3>& mrProblem;
 
 public:
-    PorcineConductivityModifier( 	bool ischaemia,
-    								//bool phase1a,
-    								//bool phase1b,
-    								double factor_h,
-									double radius,
-									double xx,
-									double yy,
-									double zz,
-									unsigned transmural,
-									BidomainProblem<3>& rProblem
-									//BidomainTissue<3>& rProblem
-									)
-
+    /*
+     * ischaemia   Enable/disable ischemic scaling.
+     * factor_h    Multiplicative conductivity factor inside region (e.g., 0.5 to halve).
+     * radius      Sphere radius.
+     * xx,yy,zz    Sphere center coordinates.
+     * transmural  0 => no domain gating (apply anywhere).
+     *            >0 => apply ONLY if domainIndex passed to the API equals this value.
+     * rProblem    Reference to the bidomain problem (access to mesh/locations).
+     */
+    PorcineConductivityModifier(bool ischaemia,
+                                /*bool phase1a,*/
+                                /*bool phase1b,*/
+                                double factor_h,
+                                double radius,
+                                double xx,
+                                double yy,
+                                double zz,
+                                unsigned transmural,
+                                BidomainProblem<3>& rProblem)
         : AbstractConductivityModifier<3,3>(),
+          mIschaemia(ischaemia),
+          mFactor(factor_h),
+          mRadius(std::max(0.0, radius)),
+          mCx(xx), mCy(yy), mCz(zz),
+          mTransmuralGate(transmural),
+          mrProblem(rProblem)
+    {
 
-        _factor_h(factor_h),
-		_radius(radius),
-		_xx(xx),
-		_yy(yy),
-		_zz(zz),
-		_transmural(transmural),
-		mrProblem(rProblem)
+    }
 
-		{
-			mIschaemia = ischaemia;
-			//mPhase1a = phase1a;
-			//mPhase1b = phase1b;
-		}
+    // Setters (optional)
+    void SetIschaemia(bool on)             { mIschaemia = on; }
+    void SetFactor(double f)               { mFactor = f; }
+    void SetSphere(double cx, double cy, double cz, double r)
+    {
+        mCx = cx; mCy = cy; mCz = cz; mRadius = std::max(0.0, r);
+    }
+    void SetTransmuralGate(unsigned gate)  { mTransmuralGate = gate; }
 
-	int counter_inside_matrix =0 ;
-	c_matrix<double,3,3>& rCalculateModifiedConductivityTensor(unsigned elementIndex, const c_matrix<double,3,3>& rOriginalConductivity, unsigned domainIndex)		    		
-	{
-		while (elementIndex < 360000)
-		{
-		if (counter_inside_matrix == 0)
-		{
-			std::cout << "got into c_matrix 1st time" << std::endl;
-		}
-		//int counter_inside_matrix;
-		//std::cout << "inside c_matrix number" << counter_inside_matrix << std::endl;
-		counter_inside_matrix += 1;
+    /*
+     * Return a possibly modified conductivity tensor for the given element index.
+     *
+     * elementIndex         	Index of the element
+     * rOriginalConductivity 	Original conductivity tensor 
+     * domainIndex          	Domain label
+     */
+    c_matrix<double,3,3>& rCalculateModifiedConductivityTensor(unsigned elementIndex,
+                                                               const c_matrix<double,3,3>& rOriginalConductivity,
+                                                               unsigned domainIndex)
+    {
+        // Start from original
+        mTensor = rOriginalConductivity;
 
-		std::cout << "mIschaemia " << mIschaemia << std::endl;
+        // Quick exits if nothing to do
+        if (!mIschaemia)            { return mTensor; }
+        if (mRadius <= 0.0)         { return mTensor; }
+        if (mFactor == 1.0)         { return mTensor; }
 
-		if (counter_inside_matrix == 2)
-		{
-			std::cout << "got into c_matrix 2nd time" << std::endl;
-		}
+        // Domain gate: if mTransmuralGate > 0, apply only within that domain
+        if (mTransmuralGate > 0 && domainIndex != mTransmuralGate)
+        {
+            return mTensor;
+        }
 
-		
-		double isch_r = _radius;
-        double isch_bz_r = isch_r + 0.5;
-        double x_isch = _xx;double y_isch = _yy; double z_isch=_zz;
-        ChastePoint<3> isch_centre (x_isch,y_isch,z_isch);
-        ChastePoint<3> isch_radius (isch_r,isch_r,isch_r);
-        ChastePoint<3> isch_bz_radius (isch_bz_r,isch_bz_r,isch_bz_r);
-        ChasteEllipsoid<3> isch_region (isch_centre,isch_radius);
-        ChasteEllipsoid<3> isch_bz_region (isch_centre,isch_bz_radius);
+        // Get spatial location.
+        const double x = mrProblem.rGetMesh().GetNode(elementIndex)->rGetLocation()[0];
+        const double y = mrProblem.rGetMesh().GetNode(elementIndex)->rGetLocation()[1];
+        const double z = mrProblem.rGetMesh().GetNode(elementIndex)->rGetLocation()[2];
 
-        //DistributedVectorFactory* p_factory = mrProblem.rGetMesh().GetDistributedVectorFactory(); // rGetMesh
-        //const std::vector<AbstractCardiacCellInterface*>& r_cells = mrProblem.GetTissue()->rGetCellsDistributed();
+        const double dx = x - mCx;
+        const double dy = y - mCy;
+        const double dz = z - mCz;
+        const double r2 = dx*dx + dy*dy + dz*dz;
 
-        //int counter_inside_loop = 0;
-        //std::cout << "pre_loop_mofifier" << std::endl;
-       
-				unsigned i = elementIndex;
-				std::cout << "elementIndex" << i << std::endl;
-				//std::cout << "counter_inside_loop" << counter_inside_loop << std::endl;
-				//std::cout << "inside c_matrix number" << counter_inside_matrix << std::endl;
-				//counter_inside_loop += 1;
-				
-				//
-				
-				//bool cell_is_in_ischReg = isch_region.DoesContain(mrProblem.GetTissue()->GetNode(i)->rGetLocation()); // rGetMesh
-				//GetNode(i) not in AbstractCardiacCellInterface
+        if (r2 <= mRadius*mRadius)
+        {
+            // Inside ischemic sphere: scale full tensor.
+            mTensor = mTensor * mFactor;
+        }
 
-				//bool cell_is_in_ischReg = isch_region.DoesContain(this->GetTissue()->GetNode(node_index)->rGetLocation()); // GetMesh
-		        //bool cell_is_in_ischReg = isch_region.DoesContain(this->rGetMesh()->GetNode(node_index)->rGetLocation()); // GetMesh
-		        //bool cell_is_in_isch_BZReg = isch_bz_region.DoesContain(this->GetTissue()->GetNode(node_index)->rGetLocation());
-
-		        //bool cell_is_in_s2StimReg = s2_region.DoesContain(bidomain_problem->rGetMesh().GetNode(i)->rGetLocation());
-
-		        /// x y z
-			
-		        //double x = this->GetMesh()->GetNode(node_index)->rGetLocation()[0];
-		        //double y = this->GetMesh()->GetNode(node_index)->rGetLocation()[1];
-		        //double z = this->GetMesh()->GetNode(node_index)->rGetLocation()[2];
-
-		        //double intra_longi_h_n = 1, intra_trans_h_n = 1, intra_normal_h_n = 1;
-		        //double intra_longi_h_i = resistance_factor, intra_trans_h_i = resistance_factor, intra_normal_h_i = resistance_factor;
-
-		        double resistance_factor = _factor_h;
-		        double intra_h_n = 1;
-		        double intra_h_i = resistance_factor;
-
-		        double domain_scaling=1;
-
-		        DistributedVectorFactory* p_factory = mrProblem.rGetMesh().GetDistributedVectorFactory();
-			
-				for (unsigned k=p_factory->GetLow(); k<p_factory->GetHigh(); k++)
-				{
-					if (i == k)
-					{
-						i=k;
-
-
-
-		        if (domainIndex == 0) // 0 for intra
-					{
-						std::cout << "pre_cell_is_in_isch_BZReg?"  << std::endl;
-						bool cell_is_in_isch_BZReg = isch_bz_region.DoesContain(mrProblem.rGetMesh().GetNode(i)->rGetLocation()); // rGetMesh
-						std::cout << "cell_is_in_isch_BZReg?"  << std::endl;
-
-		        		if (cell_is_in_isch_BZReg && mIschaemia) 
-						{
-							std::cout << "pre_cell_is_in_ischReg?"  << std::endl;
-							bool cell_is_in_ischReg = isch_region.DoesContain(mrProblem.rGetMesh().GetNode(i)->rGetLocation()); // .rGetMesh.
-							std::cout << "cell_is_in_ischReg?"  << std::endl;
-
-								if(cell_is_in_ischReg)
-								{
-									domain_scaling = resistance_factor;	
-								}
-								else if (_transmural==1)
-								{
-									double x = mrProblem.rGetMesh().GetNode(i)->rGetLocation()[0]; // rGetMesh
-							        double y = mrProblem.rGetMesh().GetNode(i)->rGetLocation()[1];
-							        double z = mrProblem.rGetMesh().GetNode(i)->rGetLocation()[2];
-
-									double distance_from_isch_centre = sqrt(pow((x-x_isch),2)+pow((y-y_isch),2)+pow((z-z_isch),2)); // distance from ischaemic centre
-									double distance_from_cz = distance_from_isch_centre - isch_r;
-
-									double bz_k = isch_bz_r-isch_r; // K+ border zone width
-									double a_intra_h = (intra_h_n-intra_h_i)/bz_k;
-								    double y_intra_h = a_intra_h*distance_from_cz+intra_h_i;
-
-									domain_scaling = y_intra_h;
-								}
-								std::cout << "goingout_cell_is_in_isch_BZReg?_and calc mTensor"  << std::endl;
-						}
-							//else
-					        //{
-					        //    domain_scaling = 1; // domainIndex==1 implies extracellular ... assume extra is always constant
-					        //}
-					}
-					else
-					{
-						domain_scaling = 1;
-					}   
-					        // save to the "working memory", and return.
-							std::cout << "pre_calc_mTensor" << std::endl;
-							for ( unsigned j=0; j<1; j++ ) // j=2 no use
-							 {
-							    mTensor(j,j) = domain_scaling*elementIndex*rOriginalConductivity(j,j);
-							 }
-
-							            //mTensor(0,0) = domain_scaling*elementIndex*rOriginalConductivity(0,0); // only intra to modify
-							            //std::cout << "mTensor calculated" << std::endl;
-
-							
-
-				}
-			}
-				
-			}
-							std::cout << "pre_return_mTensor" << std::endl;
-							return mTensor;
-
-					        
-	}			
-   
+        return mTensor;
+    }
 };
+
+#endif // PORCINE_CONDUCTIVITY_MODIFIER_HPP_
