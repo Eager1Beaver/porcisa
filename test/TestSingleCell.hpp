@@ -1,277 +1,310 @@
-#include <cxxtest/TestSuite.h>
+#ifndef TEST_SINGLE_CELL_HPP_
+#define TEST_SINGLE_CELL_HPP_
+
+/*
+        Pace a single porcine AP model to steady state and compute biomarkers.
+
+        Outputs (CSV in cfg.outdir):
+        - singlecell_biomarkers.csv   // one row with computed metrics
+        - singlecell_trace.csv        // time, Vm for the final (analyzed) beat
+ 
+        How it works
+        1) Paces the cell with a RegularStimulus for up to max_beats.
+        2) After each beat (period), computes APD90; checks convergence on the last K beats.
+        3) Uses the final beat to compute biomarkers (RMP, Vpeak, APA, dVdt_max, APD50, APD90, triangulation).
+ */
+
+#include <vector>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
+#include "OutputFileHandler.hpp"
+#include "CommandLineArguments.hpp"
+#include "PetscTools.hpp"
+
 #include "AbstractCvodeCell.hpp"
-#include "CellProperties.hpp"
-#include "EulerIvpOdeSolver.hpp"
+#include "AbstractCardiacCellInterface.hpp"
 #include "RegularStimulus.hpp"
-#include "HeartConfig.hpp"
-//#include "Shannon2004Cvode.hpp"
-//#include "carro_2011_epiCvodeOpt.hpp"
-/*
-#include "carro_2011_epiCvodeOpt.hpp"
-#include "carro_2011_epi_pig_fkatp_v3CvodeOpt.hpp"
-#include "carro_2011_endo_pig_fkatp_v3CvodeOpt.hpp"
-#include "carro_2011_m_pig_fkatp_v3CvodeOpt.hpp"
+#include "SimpleStimulus.hpp"
+#include "UblasIncludes.hpp"
 
-#include "carro_2011_epi_pig_fkatp_v4CvodeOpt.hpp"
-#include "carro_2011_endo_pig_fkatp_v4CvodeOpt.hpp"
-#include "carro_2011_m_pig_fkatp_v4CvodeOpt.hpp"
+// If switching a layer: include epi/m variants and swap the constructor.
+#include "pig_ventr_ap_endoCvodeOpt.hpp"
 
-#include "carro_2011_epi_pig_fkatp_v4_nalCvodeOpt.hpp"
-
-#include "carro_2011_epi_pig_fkatp_v4_nal_ito2gCvodeOpt.hpp"
-#include "carro_2011_endo_pig_fkatp_v4_nal_ito2gCvodeOpt.hpp"
-#include "carro_2011_m_pig_fkatp_v4_nal_ito2gCvodeOpt.hpp"
-*/
-//#include "carro_2011_epi_pig_fkatp_v4_nal_ito2g2caclmod_k1mod_ssCvodeOpt.hpp"
-//#include "carro_2011_endo_pig_fkatp_v4_nal_ito2g2caclmod_k1mod_ssCvodeOpt.hpp"
-//#include "carro_2011_m_pig_fkatp_v4_nal_ito2g2caclmod_k1mod_ssCvodeOpt.hpp"
-
-//#include "carro_2011_epi_pig_fkatp_v4_nal_ito2g2caclmod_k1mod_ncCvodeOpt.hpp"
-//#include "carro_2011_endo_pig_fkatp_v4_nal_ito2g2caclmod_k1mod_ncCvodeOpt.hpp"
-
-//#include "carro_2011_epi_pig_fkatp_v4_nal_ito2g2caclmod_k1mod_nc_mod2CvodeOpt.hpp"
-//#include "carro_2011_endo_pig_fkatp_v4_nal_ito2g2caclmod_k1mod_nc_mod2CvodeOpt.hpp"
-
-//#include "carro_2011_epi_pig_scratch_3_go1_ssCvodeOpt.hpp"
-//#include "carro_2011_endo_pig_scratch_3_go1_ssCvodeOpt.hpp"
-//#include "carro_2011_m_pig_scratch_3_go1_ssCvodeOpt.hpp"
-
-#include "carro_2011_epi_pig_scratch_4_go1CvodeOpt.hpp"
-#include "carro_2011_endo_pig_scratch_4_go1CvodeOpt.hpp"
-#include "carro_2011_m_pig_scratch_4_go1CvodeOpt.hpp"
-
-//#include "pigexx_chasteCvodeOpt.hpp"
-
-#include "SteadyStateRunner.hpp"
-#include "FakePetscSetup.hpp"
-
-class TestSingleCellSimulationTutorial : public CxxTest::TestSuite
+struct SingleCellConfig
 {
-public:
-    void TestShannonSimulation() /*throw (Exception)*/
-    {
-#ifdef CHASTE_CVODE
-
-        boost::shared_ptr<RegularStimulus> p_stimulus(new RegularStimulus(-50,1.0,1000.0,10.0)); //mag was 50.. threshhol -20
-        //boost::shared_ptr<RegularStimulus> p_stimulus;
-        boost::shared_ptr<AbstractIvpOdeSolver> p_solver;
-        //boost::shared_ptr<AbstractCvodeCell> p_model(new Cellcarro_2011_epi_pig_fkatp_v3FromCellMLCvodeOpt(p_solver, p_stimulus));
-
-        //boost::shared_ptr<AbstractCvodeCell> p_model(new Cellcarro_2011_epi_pig_fkatp_v4FromCellMLCvodeOpt(p_solver, p_stimulus));
-        //boost::shared_ptr<AbstractCvodeCell> p_model(new Cellcarro_2011_endo_pig_fkatp_v4FromCellMLCvodeOpt(p_solver, p_stimulus));
-        //boost::shared_ptr<AbstractCvodeCell> p_model(new Cellcarro_2011_m_pig_fkatp_v4FromCellMLCvodeOpt(p_solver, p_stimulus));
-
-        //boost::shared_ptr<AbstractCvodeCell> p_model(new Cellcarro_2011_m_pig_fkatp_v4_nal_ito2gFromCellMLCvodeOpt(p_solver, p_stimulus));
-        //boost::shared_ptr<AbstractCvodeCell> p_model(new Cellpigexx_chasteFromCellMLCvodeOpt(p_solver, p_stimulus));
-
-        boost::shared_ptr<AbstractCvodeCell> p_model(new Cellcarro_2011_epi_pig_scratch_4_go1FromCellMLCvodeOpt(p_solver, p_stimulus));
-        // adp90 225 -epi, 235 endo: gks 0.045 for endo, 255 m: + gkr 0.055
-        
-        // stim starts at 10 (was 0), dur = 1, ampl = 40, perdiod = 1000
-        //boost::shared_ptr<RegularStimulus> p_regular_stim = p_model->UseCellMLDefaultStimulus();
-
-        //p_regular_stim->SetPeriod(1000); //500 it effects the properties 
-
-        std::string layer = "epi";
-
-        p_model->SetMaxSteps(1e6);
-
-        double abs_t = 1e-8;
-        double rel_t = 1e-8;
-        p_model->SetTolerances(abs_t, rel_t); // e-8 good
-
-        // control
-        
-        //p_model->SetParameter("membrane_L_type_calcium_current_conductance", 1.0); //1.2
-        //p_model->SetParameter("membrane_fast_sodium_current_conductance", 19.0); //20 // 36
-        //p_model->SetParameter("extracellular_potassium_concentration", 5.0); // 5.9
-        //p_model->SetParameter("extracellular_sodium_concentration", 155);
-
-        // for endo, m checking
-        p_model->SetParameter("membrane_slow_delayed_rectifier_potassium_current_conductance", 0.0225); // 0.09
-        //p_model->SetParameter("membrane_rapid_delayed_rectifier_potassium_current_conductance", 0.0225); // 0.09
-        
-        //p_model->SetParameter("ca_activated_cl_current_conductance", 1.54); 
-        //p_model->SetParameter("late_sodium_current_conductance", 0.015);
-/*
-        p_model->SetParameter("membrane_sodium_calcium_exchanger_current_conductance", 6.2); // ncx 5.5
-        p_model->SetParameter("membrane_inward_rectifier_potassium_current_conductance", 0.57153); // k1
-        p_model->SetParameter("membrane_rapid_delayed_rectifier_potassium_current_conductance", 0.135); // 192 // 0.152 gkr
-        p_model->SetParameter("membrane_slow_delayed_rectifier_potassium_current_conductance", 0.022); // 0.054 gks
-       // p_model->SetParameter("membrane_ca_activated_potassium_current_conductance", 0.054813);
-        p_model->SetParameter("extracellular_calcium_concentration", 2.8); // 2.2  // 2.7
-        p_model->SetParameter("extracellular_potassium_concentration", 5.7); // 5.9
-        p_model->SetParameter("extracellular_sodium_concentration", 145); // 149
-        p_model->SetParameter("membrane_inward_rectifier_potassium_current_conductance", 0.57); //0.57153
-
-        p_model->SetParameter("membrane_slow_transient_outward_current_conductance", 0.0); // 0
-        p_model->SetParameter("membrane_fast_transient_outward_current_conductance", 0.0); // 0 //0.1144
-        */
-
-       // ischemica
-
-        bool ischemia = false, phase1a = false, phase1b = false; 
-
-        if (ischemia == true)
-        {
-                double decrease_factor_gna = 0;
-                double k_o = 0;
-                double fkatp = 0;
-                double decrease_factor_ncx = 0;
-                double decrease_factor_nak = 0;
-                double gnal_factor = 0;
-                //double decrease_factor_iup = 0;
-                //double decrease_factor_irel = 0;
-                //double gcacl = 0;
-
-                double gna = p_model->GetParameter("membrane_fast_sodium_current_conductance");
-                double gca = p_model->GetParameter("membrane_L_type_calcium_current_conductance");
-
-                if (phase1a == true)
-                {
-                        double gnal = p_model->GetParameter("membrane_late_sodium_current_conductance");
-
-                        decrease_factor_gna = 0.85; //0.80; // 5po = 0.80 // 10po = 0.75 // 30po = 0.5 
-                        k_o = 6.5; //6.3; //6.8; //7.6;
-                        fkatp = 0.06; //0.14; //0.07;
-                        //gcacl = 0.8; // 0.8 for epi, 0.2 for endo, 0.8 for m
-                        //p_model->SetParameter("ca_activated_cl_current_conductance", gcacl);
-                        gnal_factor = 3.5;
-
-                        p_model->SetParameter("membrane_late_sodium_current_conductance", gnal*gnal_factor);
-                }
-
-                if (phase1b == true)
-                {
-                        double kncx = p_model->GetParameter("membrane_sodium_calcium_exchanger_current_conductance");
-                        double pnak = p_model->GetParameter("membrane_sodium_potassium_pump_current_permeability");
-                        //double srup = p_model->GetParameter("SR_uptake_current_max");
-                        //double srrel = p_model->GetParameter("...");
-                        //double nai = p_model->GetParameter("cytosolic_sodium_concentration");
-
-                        decrease_factor_gna = 0.50; // 5po = 0.80 // 10po = 0.75 // 30po = 0.5   
-                        k_o = 8.5; //8.7;//9.5;
-                        fkatp = 0.1;
-                        decrease_factor_ncx = 0.3; //0.2;
-                        decrease_factor_nak = 0.3;
-                        //decrease_factor_iup = 0.9;
-                        //decrease_factor_irel = 0.05;
-
-                        p_model->SetParameter("membrane_sodium_calcium_exchanger_current_conductance", kncx*decrease_factor_ncx);
-                        p_model->SetParameter("membrane_sodium_potassium_pump_current_permeability", pnak*decrease_factor_nak);
-                        //p_model->SetParameter("cytosolic_sodium_concentration", nai*increase_factor);
-                        //p_model->SetParameter("background_ca_current_conductance", cab*increase_factor2);
-                        //p_model->SetParameter("SR_calcium_release", srrel*decrease_factor5);
-                        //p_model->SetParameter("SR_uptake_current_max", srup*decrease_factor4);  
-                }
-
-                p_model->SetParameter("membrane_L_type_calcium_current_conductance", gca*decrease_factor_gna);
-                p_model->SetParameter("membrane_fast_sodium_current_conductance", gna*decrease_factor_gna);
-                p_model->SetParameter("extracellular_potassium_concentration", k_o); // ctrl = 5.8 // 5po = 7 (7.6) // 10po = 8 (new 9) // 30po = 12 (new 13)
-                p_model->SetParameter("membrane_atp_dependent_potassium_current_conductance", fkatp); // 0.07 all (new 0.1)
-
-        }
-        
-        double max_timestep = 0.02; // 0.02
-        double sampling_timestep = 0.02;//max_timestep;//0.1; //max_timestep; // it affects accuracy in a little rate
-        //
-        std::cout << "abs_t and rel_t = " << abs_t << std::endl;
-        std::cout << "max_timestep: " << max_timestep << ", sampling_timestep: " << sampling_timestep << std::endl;
-        std::cout << "layer: " << layer << std::endl;
-        std::cout << "ischemia: " << ischemia << " phase1a: " << phase1a << " phase1b: " << phase1b << std::endl;
-
-        SteadyStateRunner steady_runner(p_model);
-        steady_runner.SetMaxNumPaces(5000u); //100000u // 5000 is optimal 
-        bool result;
-        result = steady_runner.RunToSteadyState();
-
-        TS_ASSERT_EQUALS(result, true);
-
-        p_model->SetMaxTimestep(max_timestep);
-
-        double start_time = 0.0; // 4500 gets the same results as if start from 0
-        double end_time = 400.0; // 5000
-
-        OdeSolution solution = p_model->Compute(start_time, end_time, sampling_timestep); // Compute
-
-        //solution.CalculateDerivedQuantitiesAndParameters(moda);
-
-        //std::vector<double> CaL= solution.GetAnyVariable("membrane_L_type_calcium_current");
-        //std::vector<double> Naf= solution.GetAnyVariable("membrane_fast_sodium_current");
-        //std::vector<double> Gkr= solution.GetAnyVariable("membrane_rapid_delayed_rectifier_potassium_current");
-        //std::vector<double> Gks= solution.GetAnyVariable("membrane_slow_delayed_rectifier_potassium_current");
-        //std::vector<double> I_K1= solution.GetAnyVariable("membrane_inward_rectifier_potassium_current");
-        //std::vector<double> fkatp= solution.GetAnyVariable("membrane_atp_dependent_potassium_current");
-
-        //std::vector<double> CaL = solution.rGetDerivedQuantities("membrane_L_type_calcium_current");
-
-        /*std::vector<std::string> output_variables;
-        output_variables.push_back("membrane_L_type_calcium_current");
-        HeartConfig::Instance()->SetOutputVariables(output_variables);
-        HeartConfig::Instance()->SetVisualizeWithMeshalyzer(true);
-        HeartConfig::Instance()->SetVisualizeWithVtk(true);*/
-
-        if (ischemia == false)
-        {
-                solution.WriteToFile(layer+"_ctrl", layer+"_ctrl", "ms");//, 1, false, 3, true);
-        }
-
-        if (ischemia && phase1a)
-        {
-                solution.WriteToFile(layer+"_phase1a", layer+"_phase1a", "ms");//, 1, false, 3, true);
-        }
-
-        if (ischemia && phase1b)
-        {
-                solution.WriteToFile(layer+"_phase1b", layer+"_phase1b", "ms");//, 1, false, 3, true);
-        }        
-
-        unsigned voltage_index = p_model->GetSystemInformation()->GetStateVariableIndex("membrane_voltage");
-        std::vector<double> voltages = solution.GetVariableAtIndex(voltage_index);
-        CellProperties cell_props(voltages, solution.rGetTimes());
-        
-        double apd25 = cell_props.GetLastActionPotentialDuration(25);
-        double apd30 = cell_props.GetLastActionPotentialDuration(30);
-        double apd50 = cell_props.GetLastActionPotentialDuration(50);
-        //double apd75 = cell_props.GetLastActionPotentialDuration(75);
-        double apd90 = cell_props.GetLastActionPotentialDuration(90);
-        double apd95 = cell_props.GetLastActionPotentialDuration(95);
-        //double apd100 = cell_props.GetLastActionPotentialDuration(100);
-        double max_upstroke_velocity = cell_props.GetLastMaxUpstrokeVelocity();
-        double time_max_upstroke_velocity = cell_props.GetTimeAtLastMaxUpstrokeVelocity();
-        double peak_ap = cell_props.GetLastPeakPotential();
-        double rest_ap = cell_props.GetLastRestingPotential();
-        //double ampl_ap = cell_props.GetLastActionPotentialAmplitude();
-        //std::vector<double> ccl = cell_props.GetCycleLengths(); 
-
-        //std::cout << "cycle_length = " << ccl << " ms" << std::endl;
-
-        std::cout << "peak_ap = " << peak_ap << " mV, tagret = < 67.5" << std::endl;
-        std::cout << "rest_ap = " << rest_ap << " mV, tagret = -84.5 < -79.7" << std::endl;
-        //std::cout << "ampl_ap = " << ampl_ap << " mV" << std::endl;
-        std::cout << "stim_threshhold = " << peak_ap + rest_ap << " mV" << std::endl;
-
-        std::cout << "Max upstroke velocity = " << max_upstroke_velocity << " mV/ms, , tagret = < 350" << std::endl;
-        std::cout << "time at Max upstroke velocity = " << time_max_upstroke_velocity << " ms, " << std::endl;
-
-        std::cout << "APD25 = " << apd25 << " ms, tagret = 27.4 - 36.5" << std::endl;
-        std::cout << "APD30 = " << apd30 << " ms, tagret = 27.4 - 36.5" << std::endl;
-        std::cout << "APD50 = " << apd50 << " ms, tagret = 177 - 186" << std::endl;
-        //std::cout << "APD75 = " << apd75 << " ms, tagret = 215 - 223" << std::endl;
-        std::cout << "APD90 = " << apd90 << " ms, tagret = 228 - 237" << std::endl;
-        std::cout << "APD95 = " << apd95 << " ms, tagret = 234 - 244" << std::endl;
-        std::cout << "APD_tri = " << apd30/apd90 << " ... " << std::endl;
-        //std::cout << "APD100 = " << apd100 << " ms, tagret = 245 - 255" << std::endl;
-        
-        
-        //std::cout << "K_o = " << apd25 << " ms, tagret = 27.4 - 36.5" << std::endl;
-        
-
-        //TS_ASSERT_DELTA(apd, 212.411, 1e-2);
-        //TS_ASSERT_DELTA(upstroke_velocity, 338.704, 1.25);
-
-#else
-        std::cout << "Cvode is not enabled.\n";
-#endif
-    }
+    std::string outdir = "Porcisa/SingleCell";
+    // Pacing
+    double period_ms        = 1000.0;   // BCL
+    double stim_start_ms    = 50.0;     // first pulse start
+    double stim_dur_ms      = 2.0;      // ms
+    double stim_amp_uAcm2   = -52.0;    // uA/cm^2 (single-cell units)
+    // Simulation/sampling
+    unsigned max_beats      = 300;
+    unsigned min_beats      = 50;
+    unsigned steady_window  = 5;        // last K beats to check convergence
+    double   apd_tol_ms     = 0.2;      // APD90 change tolerance for convergence
+    double   dt_sample_ms   = 0.02;     // sampling step for recorded Vm
+    // Upstroke detection/APD thresholds
+    double   dvdt_threshold = 10.0;     // mV/ms for upstroke detection
+    // Biomarker trace export
+    bool     write_trace_csv = true;
 };
+
+// --------- helpers ----------
+inline void WriteCsv(const std::string& path, const std::string& text)
+{
+    std::ofstream f(path.c_str(), std::ios::out | std::ios::trunc);
+    if(!f.is_open()) throw std::runtime_error("Cannot open for writing: "+path);
+    f << text;
+}
+
+struct BeatMetrics
+{
+    double rmp_mV = std::numeric_limits<double>::quiet_NaN();
+    double vpeak_mV = std::numeric_limits<double>::quiet_NaN();
+    double apa_mV = std::numeric_limits<double>::quiet_NaN();
+    double dvdt_max = std::numeric_limits<double>::quiet_NaN(); // mV/ms
+    double apd50_ms = std::numeric_limits<double>::quiet_NaN();
+    double apd90_ms = std::numeric_limits<double>::quiet_NaN();
+    double triangulation_ms = std::numeric_limits<double>::quiet_NaN(); // APD90-APD50
+    double t_up_ms = std::numeric_limits<double>::quiet_NaN(); // upstroke time
+};
+
+/*
+        Extract biomarkers from a single-beat trace.
+        t, v must cover exactly one beat window [t0, t0+period].
+ */
+inline BeatMetrics AnalyzeBeat(const std::vector<double>& t,
+                               const std::vector<double>& v,
+                               double dvdt_threshold /*mV/ms*/)
+{
+    BeatMetrics bm;
+    const size_t n = t.size();
+    if (n < 3) return bm;
+
+    // Finite-difference dV/dt
+    std::vector<double> dvdt(n, 0.0);
+    for (size_t i=1; i+1<n; ++i)
+    {
+        const double dt = std::max(1e-12, t[i+1]-t[i-1]);
+        dvdt[i] = (v[i+1]-v[i-1]) / dt;
+    }
+
+    // Upstroke: first index where dV/dt crosses dvdt_threshold upward
+    size_t i_up = n; // invalid
+    for (size_t i=1; i<n; ++i)
+    {
+        if (dvdt[i-1] < dvdt_threshold && dvdt[i] >= dvdt_threshold) { i_up = i; break; }
+    }
+    if (i_up == n) return bm;
+    bm.t_up_ms = t[i_up];
+
+    // Diastolic window: 20 ms before upstroke (clamped to start)
+    double t_dia_start = std::max(t.front(), bm.t_up_ms - 20.0);
+    double rmp = 0.0; unsigned rmp_count=0;
+    for (size_t i=0; i<n; ++i)
+    {
+        if (t[i] >= t_dia_start && t[i] < bm.t_up_ms) { rmp += v[i]; ++rmp_count; }
+    }
+    bm.rmp_mV = (rmp_count ? rmp / rmp_count : v.front());
+
+    // Peak and APA
+    auto it_peak = std::max_element(v.begin()+i_up, v.end());
+    size_t i_peak = static_cast<size_t>(std::distance(v.begin(), it_peak));
+    bm.vpeak_mV = *it_peak;
+    bm.apa_mV   = bm.vpeak_mV - bm.rmp_mV;
+
+    // dV/dt max around upstroke (pm5 ms)
+    const double t_lo = bm.t_up_ms - 5.0, t_hi = bm.t_up_ms + 5.0;
+    double dvdt_max = dvdt[i_up];
+    for (size_t i=1; i+1<n; ++i)
+    {
+        if (t[i] >= t_lo && t[i] <= t_hi) dvdt_max = std::max(dvdt_max, dvdt[i]);
+    }
+    bm.dvdt_max = dvdt_max;
+
+    // APD levels
+    const double v50 = bm.vpeak_mV - 0.5*bm.apa_mV;
+    const double v90 = bm.vpeak_mV - 0.9*bm.apa_mV;
+
+    // Find repolarization crossings after peak
+    auto find_cross = [&](double vlevel)->double {
+        for (size_t i=i_peak+1; i<n; ++i)
+        {
+            if (v[i-1] >= vlevel && v[i] < vlevel)
+            {
+                // linear interpolate
+                const double a = v[i-1]-vlevel, b = v[i]-vlevel;
+                const double frac = a / (a - b + 1e-12);
+                return t[i-1] + frac*(t[i]-t[i-1]);
+            }
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    const double t50 = find_cross(v50);
+    const double t90 = find_cross(v90);
+
+    if (!std::isnan(t50)) bm.apd50_ms = t50 - bm.t_up_ms;
+    if (!std::isnan(t90)) bm.apd90_ms = t90 - bm.t_up_ms;
+    if (!std::isnan(bm.apd90_ms) && !std::isnan(bm.apd50_ms))
+        bm.triangulation_ms = bm.apd90_ms - bm.apd50_ms;
+
+    return bm;
+}
+
+/*
+        Simulate one beat and sample Vm uniformly with dt_sample.
+        Returns (t, v) over [t0, t0+period].
+ */
+inline void SimulateOneBeat(AbstractCvodeCell& cell,
+                            double t0_ms, double period_ms, double dt_sample_ms,
+                            std::vector<double>& t, std::vector<double>& v)
+{
+    t.clear(); v.clear();
+    const unsigned ns = static_cast<unsigned>(std::ceil(period_ms / dt_sample_ms));
+    double tcur = t0_ms;
+    double tend = t0_ms + period_ms;
+    t.reserve(ns+1); v.reserve(ns+1);
+
+    // Ensure CVODE cell starts from t0 (if needed)
+    cell.SetTimestep(dt_sample_ms);
+    // Sample at uniform grid
+    for (;;)
+    {
+        t.push_back(tcur);
+        v.push_back(cell.GetVoltage());
+        if (tcur >= tend) break;
+        const double tnext = std::min(tcur + dt_sample_ms, tend);
+        cell.SolveAndUpdateState(tcur, tnext);
+        tcur = tnext;
+    }
+}
+
+/*
+        Pace to steady state and compute biomarkers on the final beat.
+ */
+inline void RunSingleCell(const SingleCellConfig& cfg)
+{
+    OutputFileHandler out(cfg.outdir, /*cleanOutputDirectory=*/true);
+
+    // Build model + pacing
+    boost::shared_ptr<RegularStimulus> stim(new RegularStimulus(
+        cfg.stim_amp_uAcm2, cfg.stim_dur_ms, cfg.period_ms, cfg.stim_start_ms));
+
+    pig_ventr_ap_endoCvodeOpt cell(boost::shared_ptr<AbstractIvpOdeSolver>(), stim);
+
+    // Beat loop
+    std::vector<double> apd90_hist;
+    apd90_hist.reserve(cfg.max_beats);
+
+    std::vector<double> t_last, v_last;
+    BeatMetrics bm_last;
+
+    double t0 = 0.0;
+    for (unsigned beat=1; beat<=cfg.max_beats; ++beat)
+    {
+        // Simulate one full period and sample Vm
+        SimulateOneBeat(cell, t0, cfg.period_ms, cfg.dt_sample_ms, t_last, v_last);
+        t0 += cfg.period_ms;
+
+        // Analyze this beat's APD90 (for convergence check)
+        BeatMetrics bm = AnalyzeBeat(t_last, v_last, cfg.dvdt_threshold);
+        apd90_hist.push_back(bm.apd90_ms);
+        bm_last = bm; // keep last
+
+        // Check steady state after minimum number of beats
+        if (beat >= std::max(cfg.min_beats, cfg.steady_window))
+        {
+            const unsigned K = cfg.steady_window;
+            bool ok = true;
+            // Require all pairwise diffs within last K beats to be <= tol (robust)
+            for (unsigned i=0; i<K && ok; ++i)
+            {
+                for (unsigned j=i+1; j<K && ok; ++j)
+                {
+                    const double a = apd90_hist[apd90_hist.size()-1-i];
+                    const double b = apd90_hist[apd90_hist.size()-1-j];
+                    if (std::isnan(a) || std::isnan(b) || std::fabs(a-b) > cfg.apd_tol_ms) ok = false;
+                }
+            }
+            if (ok) break;
+        }
+    }
+
+    // Final biomarkers on the last beat (already computed as bm_last)
+    // Also compute RMP more robustly from late-diastolic window of the last beat
+    // (AnalyzeBeat already averages 20 ms before upstroke).
+
+    // Write biomarkers CSV
+    {
+        std::ostringstream ss;
+        ss << "period_ms, stim_start_ms, stim_dur_ms, stim_amp_uAcm2,"
+              "RMP_mV, Vpeak_mV, APA_mV, dVdt_max_mV_per_ms, APD50_ms, APD90_ms, Triang_ms, t_up_ms\n";
+        ss << std::fixed << std::setprecision(6)
+           << cfg.period_ms << "," << cfg.stim_start_ms << "," << cfg.stim_dur_ms << ","
+           << cfg.stim_amp_uAcm2 << ","
+           << bm_last.rmp_mV << "," << bm_last.vpeak_mV << "," << bm_last.apa_mV << ","
+           << bm_last.dvdt_max << "," << bm_last.apd50_ms << "," << bm_last.apd90_ms << ","
+           << bm_last.triangulation_ms << "," << bm_last.t_up_ms << "\n";
+        WriteCsv(out.GetOutputDirectoryFullPath() + "singlecell_biomarkers.csv", ss.str());
+    }
+
+    // Write final beat trace
+    if (cfg.write_trace_csv)
+    {
+        std::ostringstream ts;
+        ts << "time_ms,Vm_mV\n";
+        for (size_t i=0; i<t_last.size(); ++i)
+            ts << std::fixed << std::setprecision(6) << t_last[i] << "," << v_last[i] << "\n";
+        WriteCsv(out.GetOutputDirectoryFullPath() + "singlecell_trace.csv", ts.str());
+    }
+
+    if (PetscTools::AmMaster())
+    {
+        std::cout << "Wrote biomarkers and trace to: "
+                  << out.GetOutputDirectoryFullPath() << std::endl;
+    }
+}
+
+// -------- main --------
+#ifdef PORCISA_SINGLECELL_MAIN
+int main(int argc, char* argv[])
+{
+    CommandLineArguments* p_args = CommandLineArguments::Instance();
+    p_args->Parse(argc, argv);
+
+    SingleCellConfig cfg;
+
+    if (p_args->OptionExists("--out"))     cfg.outdir = p_args->GetOption("--out");
+    if (p_args->OptionExists("--bcl"))     cfg.period_ms = atof(p_args->GetOption("--bcl").c_str());
+    if (p_args->OptionExists("--stimt"))   cfg.stim_start_ms = atof(p_args->GetOption("--stimt").c_str());
+    if (p_args->OptionExists("--stimdur")) cfg.stim_dur_ms = atof(p_args->GetOption("--stimdur").c_str());
+    if (p_args->OptionExists("--stimamp")) cfg.stim_amp_uAcm2 = atof(p_args->GetOption("--stimamp").c_str());
+    if (p_args->OptionExists("--maxb"))    cfg.max_beats = (unsigned)atoi(p_args->GetOption("--maxb").c_str());
+    if (p_args->OptionExists("--minb"))    cfg.min_beats = (unsigned)atoi(p_args->GetOption("--minb").c_str());
+    if (p_args->OptionExists("--kwin"))    cfg.steady_window = (unsigned)atoi(p_args->GetOption("--kwin").c_str());
+    if (p_args->OptionExists("--apdtol"))  cfg.apd_tol_ms = atof(p_args->GetOption("--apdtol").c_str());
+    if (p_args->OptionExists("--dt"))      cfg.dt_sample_ms = atof(p_args->GetOption("--dt").c_str());
+    if (p_args->OptionExists("--dvdt"))    cfg.dvdt_threshold = atof(p_args->GetOption("--dvdt").c_str());
+    if (p_args->OptionExists("--trace"))   cfg.write_trace_csv = (atoi(p_args->GetOption("--trace").c_str()) != 0);
+
+    try {
+        RunSingleCell(cfg);
+    } catch (const std::exception& e) {
+        if (PetscTools::AmMaster())
+            std::cerr << "Fatal: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0;
+}
+#endif // PORCISA_SINGLECELL_MAIN
+
+#endif // TEST_SINGLE_CELL_HPP_
